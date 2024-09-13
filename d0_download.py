@@ -4,9 +4,9 @@ import pandas as pd
 
 def download_code_hist(
     save_path="./datasets",
-    code="sh.600000",
-    start_date="2018-09-01",
-    end_date="2024-06-30",
+    code="sh.000001",
+    start_date="2001-09-01",
+    end_date="2024-09-13",
     freq="d",
     adjustflag="2"
 ):

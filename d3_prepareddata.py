@@ -17,27 +17,29 @@ from torch.utils.data import TensorDataset, DataLoader
 
 
 def get_datasets(batch_size=32, shuffle=False):
-    df = pd.read_csv("./datasets/sh.600000.csv")
+    df = pd.read_csv("./datasets/sh.000001.csv")
+  # df = pd.read_csv("./datasets/sh.600000.csv")
 
     # normalize data
     df2 = df.copy(deep=True)
-    scaler = MinMaxScaler(feature_range=(0,15)).fit(df2.low.values.reshape(-1,1))
+    scaler = MinMaxScaler(feature_range=(0,100)).fit(df2.low.values.reshape(-1,1))
     df2['open'] = scaler.transform(df2.open.values.reshape(-1,1))
     df2['high'] = scaler.transform(df2.high.values.reshape(-1,1))
     df2['low'] = scaler.transform(df2.low.values.reshape(-1,1))
     df2['close'] = scaler.transform(df2.close.values.reshape(-1,1))    
+
     df2.to_csv("./datasets/features.csv")
     data = df2[['open','high','low', 'close']].values
     
     # divide the entire dataset into three parts. 80% for the training set, 10% for the validation set and the remaining 10% for the test set:
-    seq_len=11  # 11 day 
+    seq_len=31  # 11 day 
     sequences=[]
     for index in range(len(data) - seq_len + 1): 
         sequences.append(data[index: index + seq_len])
     sequences= np.array(sequences)
 
-    valid_set_size_percentage = 10 
-    test_set_size_percentage = 10 
+    valid_set_size_percentage = 20 
+    test_set_size_percentage = 0 
     
     valid_set_size = int(np.round(valid_set_size_percentage/100*sequences.shape[0]))  
     test_set_size  = int(np.round(test_set_size_percentage/100*sequences.shape[0]))
