@@ -2,7 +2,7 @@
 import torch
 import torch.optim as optim
 import torch.nn as nn
-from m1_model import NeuralNetwork20
+from m1_model import NeuralNetwork
 from d3_prepareddata import get_datasets
 
 
@@ -43,16 +43,16 @@ def evaluate(dataloader, model, mse):
 
 
 def main():
-    m = NeuralNetwork(4).to("cuda")
+    m = NeuralNetwork(6,256).to("cuda")
 
-    optimizer = optim.Adam(m.parameters(), lr=0.001)
+    optimizer = optim.Adam(m.parameters(), lr=0.0005)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)  # 添加学习率调度器
     mse = nn.MSELoss()
 
-    patience = 10
+    patience = 20
     n_epochs = 50000
     best_valid_loss = float('inf')
-    train_dataloader, valid_dataloader, _, _ = get_datasets()
+    train_dataloader, valid_dataloader, _, _, _, _, _, _, _ = get_datasets()
     counter = 0
 
     for epoch in range(1, n_epochs + 1):
