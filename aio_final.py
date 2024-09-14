@@ -11,12 +11,12 @@ from tqdm.notebook import tqdm
 class ImprovedNeuralNetwork(nn.Module):
     def __init__(self, num_input_features, hidden_size,num_output_features):
         super(ImprovedNeuralNetwork, self).__init__()
-        self.lstm = nn.LSTM(num_input_features, hidden_size, num_layers=2, batch_first=True, dropout=0.1)
+        self.lstm = nn.LSTM(num_input_features, hidden_size, num_layers=1, batch_first=True, dropout=0)
         self.attention = nn.MultiheadAttention(hidden_size, num_heads=2)
         self.fc1 = nn.Linear(hidden_size, hidden_size // 2)
         self.fc2 = nn.Linear(hidden_size // 2, num_output_features)
         self.relu = nn.ReLU()
-        self.dropout = nn.Dropout(p=0.1)
+        self.dropout = nn.Dropout(p=0)
         
     def forward(self, x):
         output, (hidden, cell) = self.lstm(x)
@@ -164,7 +164,7 @@ def inverse_transform_predictions(pred_days, scalers, original_features):
         pred_days[i] = scaler.inverse_transform(pred_days[i].reshape(-1, 1)).squeeze()
     return pred_days
 
-def get_datasets(file_path, original_features, all_features, seq_len=21, batch_size=32, shuffle=False):
+def get_datasets(file_path, original_features, all_features, seq_len=14, batch_size=32, shuffle=False):
     df = pd.read_csv(file_path)
     
     # Calculate technical indicators
@@ -218,7 +218,7 @@ def train(dataloader, model, optimizer, criterion, scheduler):
         loss.backward()
         
         # 梯度裁剪，防止梯度爆炸
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
         
         optimizer.step()
         epoch_loss += loss.item()
@@ -258,7 +258,7 @@ class PricePredictionLoss(nn.Module):
 
 
         # 总损失：MSE损失 + 约束损失
-        return mse_loss + 0.5 * (high_low_constraint + open_high_constraint + open_low_constraint + close_low_constraint + close_high_constraint)
+        return mse_loss + 2.0 * (high_low_constraint + open_high_constraint + open_low_constraint + close_low_constraint + close_high_constraint)
 
 def main():
     original_features = ['open', 'high', 'low', 'close', 'volume']
@@ -275,13 +275,13 @@ def main():
 
     train_dataloader, valid_dataloader, _, _, all_features = get_datasets("./datasets/sh.000001.csv", original_features,all_features)
 
-    model = ImprovedNeuralNetwork(len(all_features), 512,len(original_features)).to("cuda")
+    model = ImprovedNeuralNetwork(len(all_features), 64,len(original_features)).to("cuda")
 
-    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-5)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100)
+    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
     criterion = PricePredictionLoss()
 
-    patience = 100
+    patience = 300
     n_epochs = 10000
     best_valid_loss = float('inf')
     counter = 0
@@ -323,7 +323,7 @@ def predict():
     df_origin = pd.read_csv('./datasets/sh.000001.csv')
     df_origin = df_origin[original_features]
 
-    model = ImprovedNeuralNetwork(len(all_features), 512,len(original_features)).to(device)
+    model = ImprovedNeuralNetwork(len(all_features), 64,len(original_features)).to(device)
     model.load_state_dict(torch.load('best_model.pth'))
     model.eval()
 
@@ -331,12 +331,10 @@ def predict():
     last_sequence = sequences[-1:, 1:, :]
     last_sequence = torch.from_numpy(last_sequence).float().to(device)
 
-    PRED_DAYS = 7
+    PRED_DAYS = 13
     predicted_sequences = []
-
     with torch.no_grad():
         for _ in range(PRED_DAYS):
-            print(last_sequence)
             # 1. 预测origin feature
             pred_i = model(last_sequence)
             pred_i_np = pred_i.squeeze(0).cpu().numpy()  # 预测结果是origin feature的值
