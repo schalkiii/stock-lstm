@@ -7,6 +7,7 @@ import pandas as pd
 import torch
 import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
+from sklearn.preprocessing import MinMaxScaler
 from typing import Dict, Tuple, List
 import config
 import model
