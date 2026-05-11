@@ -1,5 +1,6 @@
 """
-简化可运行版本 - 直接在内存中训练和测试
+LSTM 股票预测 - 完整可运行版本
+修复: 梯度裁剪、中文图表、基线对比、结果保存
 """
 import os
 import numpy as np
@@ -12,8 +13,11 @@ from sklearn.preprocessing import MinMaxScaler
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 
-# ============= 配置 =============
+plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
+plt.rcParams['axes.unicode_minus'] = False
+
 SEQ_LENGTH = 10
 HIDDEN_SIZE = 64
 NUM_LAYERS = 2
@@ -25,9 +29,10 @@ BATCH_SIZE = 32
 TRAIN_RATIO = 0.7
 VAL_RATIO = 0.2
 PRED_DAYS = 5
+GRAD_CLIP = 5.0
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# ============= 模型定义 =============
+
 class StockLSTM(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers, output_size, dropout=0.2):
         super().__init__()
@@ -49,47 +54,46 @@ class StockLSTM(nn.Module):
         lstm_out, _ = self.lstm(x)
         return self.fc(lstm_out[:, -1, :])
 
-# ============= 主程序 =============
-def main():
-    print("=" * 60)
-    print("📈 LSTM 股票预测 - 简化运行")
-    print("=" * 60)
 
-    # 1. 加载数据
-    data_path = "./datasets/sh.000001.csv"
-    df = pd.read_csv(data_path)
-    
-    # 确保数值列是数值类型
-    numeric_cols = ["open", "high", "low", "close", "volume"]
-    for col in numeric_cols:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    
-    print(f"✅ 数据加载成功，共 {len(df)} 条记录")
-
-    # 2. 计算简单技术指标
+def calculate_indicators(df):
     df = df.copy()
     df["MA5"] = df["close"].rolling(window=5).mean()
     df["MA10"] = df["close"].rolling(window=10).mean()
     df["MA20"] = df["close"].rolling(window=20).mean()
     df["Return"] = df["close"].pct_change()
-    df = df.dropna()
-    print(f"✅ 技术指标计算完成，剩余 {len(df)} 条记录")
+    return df.dropna()
 
-    # 3. 定义特征和目标
+
+def main():
+    print("=" * 60)
+    print("LSTM Stock Prediction")
+    print("=" * 60)
+
+    data_path = "./datasets/sh.000001.csv"
+    df = pd.read_csv(data_path)
+
+    numeric_cols = ["open", "high", "low", "close", "volume"]
+    for col in numeric_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    print(f"Data loaded: {len(df)} records")
+
+    df = calculate_indicators(df)
+    print(f"After indicators: {len(df)} records")
+
     feature_cols = ["open", "high", "low", "close", "volume", "MA5", "MA10", "MA20", "Return"]
     target_cols = ["open", "high", "low", "close"]
 
-    # 4. 准备数据 - 只在训练集 fit scalers
     n_train = int(len(df) * TRAIN_RATIO)
     df_train = df.iloc[:n_train]
-    
+
     scalers = {}
     df_scaled = df.copy()
     for col in feature_cols:
         scalers[col] = MinMaxScaler(feature_range=(0, 1))
         scalers[col].fit(df_train[col].values.reshape(-1, 1))
         df_scaled[col] = scalers[col].transform(df[col].values.reshape(-1, 1)).flatten()
-    
+
     data = df_scaled[feature_cols].values
     X, y = [], []
     for i in range(len(data) - SEQ_LENGTH):
@@ -97,18 +101,16 @@ def main():
         y.append(data[i + SEQ_LENGTH, [feature_cols.index(t) for t in target_cols]])
     X, y = np.array(X), np.array(y)
 
-    # 5. 划分数据
     n = len(X)
     train_end = int(n * TRAIN_RATIO)
     val_end = train_end + int(n * VAL_RATIO)
-    
+
     X_train, y_train = X[:train_end], y[:train_end]
     X_val, y_val = X[train_end:val_end], y[train_end:val_end]
     X_test, y_test = X[val_end:], y[val_end:]
 
-    print(f"✅ 数据划分: 训练 {len(X_train)}, 验证 {len(X_val)}, 测试 {len(X_test)}")
+    print(f"Split: train={len(X_train)}, val={len(X_val)}, test={len(X_test)}")
 
-    # 6. 创建 DataLoader
     train_loader = DataLoader(TensorDataset(torch.tensor(X_train, dtype=torch.float32),
                                              torch.tensor(y_train, dtype=torch.float32)),
                               batch_size=BATCH_SIZE, shuffle=True)
@@ -119,7 +121,6 @@ def main():
                                            torch.tensor(y_test, dtype=torch.float32)),
                             batch_size=BATCH_SIZE, shuffle=False)
 
-    # 7. 初始化模型
     model = StockLSTM(
         input_size=len(feature_cols),
         hidden_size=HIDDEN_SIZE,
@@ -127,13 +128,12 @@ def main():
         output_size=len(target_cols),
         dropout=DROPOUT
     ).to(DEVICE)
-    
+
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, "min", patience=5, factor=0.5)
 
-    # 8. 训练
-    print("\n🚀 开始训练...")
+    print(f"\nTraining on {DEVICE}...")
     best_val_loss = float("inf")
     counter = 0
     best_model_state = None
@@ -147,6 +147,7 @@ def main():
             pred = model(X_batch)
             loss = criterion(pred, y_batch)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
             optimizer.step()
             train_loss += loss.item()
         train_loss /= len(train_loader)
@@ -166,21 +167,19 @@ def main():
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             counter = 0
-            best_model_state = model.state_dict().copy()
-            if epoch % 5 == 0:
-                print(f"✅ Epoch {epoch:2d}: 最佳模型! Val Loss = {val_loss:.6f}")
+            best_model_state = {k: v.clone() for k, v in model.state_dict().items()}
         else:
             counter += 1
             if counter >= PATIENCE:
-                print(f"⏹️  Epoch {epoch:2d}: 早停!")
+                print(f"Early stop at epoch {epoch}")
                 break
-        
+
         if epoch % 10 == 0:
-            print(f"📊 Epoch {epoch:2d} | Train Loss = {train_loss:.6f} | Val Loss = {val_loss:.6f}")
+            lr = optimizer.param_groups[0]['lr']
+            print(f"Epoch {epoch:3d} | Train={train_loss:.6f} | Val={val_loss:.6f} | Best={best_val_loss:.6f} | LR={lr:.6f}")
 
-    print(f"\n🏁 训练完成! 最佳 Val Loss = {best_val_loss:.6f}")
+    print(f"\nTraining done! Best Val Loss = {best_val_loss:.6f}")
 
-    # 9. 加载最佳模型并测试
     model.load_state_dict(best_model_state)
     model.eval()
 
@@ -192,10 +191,10 @@ def main():
             loss = criterion(pred, y_batch)
             test_loss += loss.item()
     test_loss /= len(test_loader)
-    print(f"\n📊 测试集 Loss = {test_loss:.6f}")
+    print(f"Test Loss = {test_loss:.6f}")
 
-    # 10. 回测
-    print("\n⏳ 回测测试集...")
+    # ---- Backtest ----
+    print("\nBacktesting on test set...")
     model.eval()
     predictions, actuals = [], []
 
@@ -208,7 +207,6 @@ def main():
             predictions.append(pred_scaled)
             actuals.append(data[i + SEQ_LENGTH, [feature_cols.index(t) for t in target_cols]])
 
-    # 反归一化
     pred_arr, actual_arr = np.array(predictions), np.array(actuals)
     pred_inv = pred_arr.copy()
     actual_inv = actual_arr.copy()
@@ -216,39 +214,64 @@ def main():
         pred_inv[:, i] = scalers[col].inverse_transform(pred_arr[:, i].reshape(-1, 1)).flatten()
         actual_inv[:, i] = scalers[col].inverse_transform(actual_arr[:, i].reshape(-1, 1)).flatten()
 
-    # 计算回测指标
-    print("\n" + "=" * 60)
-    print("📈 回测指标")
-    print("=" * 60)
-    for i, col in enumerate(target_cols):
-        actual = actual_inv[:, i]
-        pred = pred_inv[:, i]
-        mae = np.mean(np.abs(actual - pred))
-        rmse = np.sqrt(np.mean((actual - pred) ** 2))
-        mape = np.mean(np.abs((actual - pred) / (actual + 1e-8))) * 100
-        print(f"{col.upper():8s} | MAE = {mae:8.2f} | RMSE = {rmse:8.2f} | MAPE = {mape:6.2f}%")
+    # Naive baseline: predict today's price as tomorrow's
+    naive_inv = actual_inv[:-1].copy()
 
-    # 11. 可视化
+    print("\n" + "=" * 70)
+    print("Backtest Metrics (LSTM vs Naive Baseline)")
+    print("=" * 70)
+    header = f"{'Metric':<8} | {'Target':<8} | {'LSTM':>12} | {'Naive':>12} | {'Better?':>8}"
+    print(header)
+    print("-" * 70)
+    for i, col in enumerate(target_cols):
+        actual = actual_inv[1:, i]
+        pred = pred_inv[1:, i]
+        naive = naive_inv[:, i]
+
+        mae_lstm = np.mean(np.abs(actual - pred))
+        mae_naive = np.mean(np.abs(actual - naive))
+        rmse_lstm = np.sqrt(np.mean((actual - pred) ** 2))
+        rmse_naive = np.sqrt(np.mean((actual - naive) ** 2))
+        mape_lstm = np.mean(np.abs((actual - pred) / (actual + 1e-8))) * 100
+        mape_naive = np.mean(np.abs((actual - naive) / (actual + 1e-8))) * 100
+
+        print(f"{'MAE':<8} | {col.upper():<8} | {mae_lstm:>12.2f} | {mae_naive:>12.2f} | {'YES' if mae_lstm < mae_naive else 'NO':>8}")
+        print(f"{'RMSE':<8} | {col.upper():<8} | {rmse_lstm:>12.2f} | {rmse_naive:>12.2f} | {'YES' if rmse_lstm < rmse_naive else 'NO':>8}")
+        print(f"{'MAPE':<8} | {col.upper():<8} | {mape_lstm:>11.2f}% | {mape_naive:>11.2f}% | {'YES' if mape_lstm < mape_naive else 'NO':>8}")
+        if i < len(target_cols) - 1:
+            print("-" * 70)
+
+    # Save backtest results
     os.makedirs("./results", exist_ok=True)
-    print("\n🎨 生成回测图表...")
     dates = df["date"].iloc[test_start_idx + SEQ_LENGTH: len(data)].values
+    backtest_df = pd.DataFrame({
+        "date": dates,
+        **{f"actual_{col}": actual_inv[:, i] for i, col in enumerate(target_cols)},
+        **{f"pred_{col}": pred_inv[:, i] for i, col in enumerate(target_cols)}
+    })
+    backtest_df.to_csv("./results/backtest_result.csv", index=False)
+    print(f"\nBacktest results saved to ./results/backtest_result.csv")
+
+    # Plot
+    print("Generating plots...")
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     axes = axes.flatten()
 
     for i, col in enumerate(target_cols):
         ax = axes[i]
-        ax.plot(range(len(actual_inv)), actual_inv[:, i], label="实际", color="blue", linewidth=1.5, alpha=0.8)
-        ax.plot(range(len(pred_inv)), pred_inv[:, i], label="预测", color="red", linewidth=1.5, alpha=0.7)
-        ax.set_title(f"{col.upper()} 预测 vs 实际", fontsize=12)
+        ax.plot(range(len(actual_inv)), actual_inv[:, i], label="Actual", color="blue", linewidth=1.5, alpha=0.8)
+        ax.plot(range(len(pred_inv)), pred_inv[:, i], label="LSTM Pred", color="red", linewidth=1.5, alpha=0.7)
+        ax.set_title(f"{col.upper()} Prediction vs Actual", fontsize=12)
         ax.legend(fontsize=10)
         ax.grid(True, alpha=0.3)
+        ax.set_xlabel("Trading Days")
 
     plt.tight_layout()
     plt.savefig("./results/backtest_plot.png", dpi=150)
-    print(f"✅ 回测图表已保存到 ./results/backtest_plot.png")
+    print(f"Plot saved to ./results/backtest_plot.png")
 
-    # 12. 预测未来
-    print(f"\n🔮 预测未来 {PRED_DAYS} 天...")
+    # ---- Future Prediction ----
+    print(f"\nPredicting next {PRED_DAYS} days...")
     model.eval()
     current_seq = data[-SEQ_LENGTH:].copy()
     future_preds_scaled = []
@@ -263,20 +286,19 @@ def main():
                 new_step[feature_cols.index(col)] = pred_scaled[i]
             current_seq = np.vstack([current_seq[1:], new_step])
 
-    # 反归一化
     future_preds = np.array(future_preds_scaled)
     for i, col in enumerate(target_cols):
         future_preds[:, i] = scalers[col].inverse_transform(future_preds[:, i].reshape(-1, 1)).flatten()
-    
+
     future_df = pd.DataFrame(future_preds, columns=target_cols, index=[f"Day {i+1}" for i in range(PRED_DAYS)])
-    print("\n📊 未来预测结果:")
+    print("\nFuture Predictions:")
     print(future_df.round(2))
     future_df.to_csv("./results/future_prediction.csv")
-    print(f"✅ 预测结果已保存到 ./results/future_prediction.csv")
 
     print("\n" + "=" * 60)
-    print("✅ 所有任务完成!")
+    print("All done!")
     print("=" * 60)
+
 
 if __name__ == "__main__":
     main()
